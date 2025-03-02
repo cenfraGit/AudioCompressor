@@ -14,23 +14,24 @@ if platform.system() == "Windows":
     import ctypes
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
 
+# ------------------------------------------------------------
+# global variables, needed for thread
+# ------------------------------------------------------------
+
+audio_data = AudioData()
+compression_data = CompressionData()
+
 CHUNK = 2048
 FORMAT = pyaudio.paInt16
+
+paudio = pyaudio.PyAudio()        
+stream = None
+wav = None
+audio_array = np.zeros(CHUNK, dtype=np.int16)
 
 class FrameMain(wx.Frame):
     def __init__(self, parent):
         super().__init__(parent)
-
-        # ---------------- setup ---------------- #
-
-        self.paudio = pyaudio.PyAudio()        
-        self.stream = None
-        self.wav = None
-
-        self.audio_array = np.zeros(CHUNK, dtype=np.int16)
-
-        self.audio_data = AudioData()
-        self.compression_data = CompressionData()
 
         # ------------ window config ------------ #
 
@@ -55,19 +56,21 @@ class FrameMain(wx.Frame):
 
         # -------- complete wave visuals -------- #
 
-        visualization_panel_top = wx.Panel(staticbox_top, size=self.FromDIP(wx.Size(-1, 70)))
-        visualization_panel_top.SetBackgroundColour(wx.RED)
+        self.visualization_panel_top = wx.Panel(staticbox_top, size=self.FromDIP(wx.Size(-1, 70)))
+        self.visualization_panel_top.SetBackgroundColour(wx.RED)
 
         # ---------- real time visuals ---------- #
         
-        visualization_panel_bottom = wx.Panel(staticbox_top, size=self.FromDIP(wx.Size(-1, 70)))
-        visualization_panel_bottom.SetBackgroundColour(wx.YELLOW)
+        self.visualization_panel_bottom = wx.Panel(staticbox_top, size=self.FromDIP(wx.Size(-1, 70)))
+        self.visualization_panel_bottom.SetBackgroundColour(wx.BLACK)
+
+        self.visualization_panel_bottom.SetBackgroundStyle(wx.BG_STYLE_PAINT)
 
         # --------- add panels to sizer --------- #
 
         sizer_staticbox_top.Add(wx.Window(staticbox_top), 0, wx.EXPAND|wx.TOP, 30)
-        sizer_staticbox_top.Add(visualization_panel_top, 0, wx.EXPAND|wx.ALL, 5)
-        sizer_staticbox_top.Add(visualization_panel_bottom, 0, wx.EXPAND|wx.ALL, 5)
+        sizer_staticbox_top.Add(self.visualization_panel_top, 0, wx.EXPAND|wx.ALL, 5)
+        sizer_staticbox_top.Add(self.visualization_panel_bottom, 0, wx.EXPAND|wx.ALL, 5)
 
         # ------------------------------------------------------------
         # bottom staticbox
@@ -202,7 +205,14 @@ class FrameMain(wx.Frame):
 
         self.SetMenuBar(menubar)
 
+        # ------------------------------------------------------------
+        # events
+        # ------------------------------------------------------------
+
+        self.visualization_panel_bottom.Bind(wx.EVT_PAINT, self._on_paint)
+        
     def _on_menu_wav_open(self, event):
+        global audio_data, wav, stream
         
         with wx.FileDialog(self, "Open WAV file", wildcard="WAV files (*.wav)|*.wav",
                        style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
@@ -212,25 +222,25 @@ class FrameMain(wx.Frame):
 
             pathname = fileDialog.GetPath()
             try:
-                if self.wav:
-                    self.wav.close()
-                if self.stream:
-                    self.stream.close()
+                if wav:
+                    wav.close()
+                    wav = None
+                if stream:
+                    stream.close()
+                    stream = None
                     
-                self.wav = wave.open(pathname, 'rb')
-                self.audio_data.CHANNELS = self.wav.getnchannels()
-                self.audio_data.RATE = self.wav.getframerate()
+                wav = wave.open(pathname, 'rb')
+                audio_data.CHANNELS = wav.getnchannels()
+                audio_data.RATE = wav.getframerate()
 
-                if not self.audio_data.CHANNELS or not self.audio_data.RATE:
+                if not audio_data.CHANNELS or not audio_data.RATE:
                     wx.LogError("Error loading channels or rate.")
                     return
 
-                self.stream = self.paudio.open(format=FORMAT,
-                                               channels=self.audio_data.CHANNELS,
-                                               rate=self.audio_data.RATE,
-                                               output=True)
-
-                
+                stream = paudio.open(format=FORMAT,
+                                     channels=audio_data.CHANNELS,
+                                     rate=audio_data.RATE,
+                                     output=True)
                 
             except IOError:
                 wx.LogError("Cannot open file.")
@@ -252,9 +262,59 @@ class FrameMain(wx.Frame):
     def _on_exit(self, event):
         self.Close()
 
+    def update_drawing(self, data):
+        global audio_array
+        audio_array = np.frombuffer(data, dtype=np.int16)
+        self.visualization_panel_bottom.Refresh()
+
+    def _on_paint(self, event):
+        dc = wx.BufferedPaintDC(self.visualization_panel_bottom)
+        w, h = self.visualization_panel_bottom.GetSize()
+
+        dc.Clear()
+
+        dc.SetPen(wx.Pen(wx.WHITE))
+
+        middle = h // 2
+        scale = h / 32768 / 2
+        scaled_data = middle - (audio_array * scale)
+        points = [(x, int(scaled_data[x])) for x in range(len(scaled_data))]
+
+        dc.DrawLines(points)
+        
+
+def audio_thread(frame):
+    global data, paudio, wav, stream
+
+    if not wav or not stream:
+        return
+    
+    data = wav.readframes(CHUNK)
+    while data:
+
+        audio_data = np.frombuffer(data, dtype=np.int16)
+        filtered_data = audio_data.astype(np.int16).tobytes()
+        stream.write(filtered_data) # play audio
+        wx.CallAfter(frame.update_drawing, filtered_data) # update plot
+        data = wav.readframes(CHUNK)
+
+    stream.stop_stream()
+    stream.close()
+    paudio.terminate()
+    wav.close()
+
+def run_audio_thread(frame):
+    while True:
+        thread = Thread(target=audio_thread, args=(frame,))
+        thread.start()
+        thread.join()
         
 if __name__ == "__main__":
     app = wx.App()
     frame_main = FrameMain(None)
+    
+    thread = Thread(target=run_audio_thread, args=(frame_main,))
+    thread.start()
+    
     frame_main.Show()
     app.MainLoop()
