@@ -7,15 +7,30 @@ import wx
 import wx.lib.agw.knobctrl as KC
 from threading import Thread
 
+from src.classes.audiodata import AudioData
+from src.classes.compressiondata import CompressionData
+
 if platform.system() == "Windows":
     import ctypes
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
 
-    
+CHUNK = 2048
+FORMAT = pyaudio.paInt16
 
 class FrameMain(wx.Frame):
     def __init__(self, parent):
         super().__init__(parent)
+
+        # ---------------- setup ---------------- #
+
+        self.paudio = pyaudio.PyAudio()        
+        self.stream = None
+        self.wav = None
+
+        self.audio_array = np.zeros(CHUNK, dtype=np.int16)
+
+        self.audio_data = AudioData()
+        self.compression_data = CompressionData()
 
         # ------------ window config ------------ #
 
@@ -197,13 +212,42 @@ class FrameMain(wx.Frame):
 
             pathname = fileDialog.GetPath()
             try:
-                with open(pathname, 'r') as file:
-                    pass
+                if self.wav:
+                    self.wav.close()
+                if self.stream:
+                    self.stream.close()
+                    
+                self.wav = wave.open(pathname, 'rb')
+                self.audio_data.CHANNELS = self.wav.getnchannels()
+                self.audio_data.RATE = self.wav.getframerate()
+
+                if not self.audio_data.CHANNELS or not self.audio_data.RATE:
+                    wx.LogError("Error loading channels or rate.")
+                    return
+
+                self.stream = self.paudio.open(format=FORMAT,
+                                               channels=self.audio_data.CHANNELS,
+                                               rate=self.audio_data.RATE,
+                                               output=True)
+
+                
+                
             except IOError:
                 wx.LogError("Cannot open file.")
             
     def _on_menu_wav_save(self, event):
-        pass
+        with wx.FileDialog(self, "Save WAV file", wildcard="WAV files (*.wav)|*.wav",
+                       style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as fileDialog:
+
+            if fileDialog.ShowModal() == wx.ID_CANCEL:
+                return
+
+            pathname = fileDialog.GetPath()
+            try:
+                with open(pathname, 'w') as file:
+                    pass
+            except IOError:
+                wx.LogError("Cannot save file")
 
     def _on_exit(self, event):
         self.Close()

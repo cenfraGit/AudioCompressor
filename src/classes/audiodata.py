@@ -1,7 +1,8 @@
 import pyaudio
 
 class AudioData:
-    CHUNK = 2048
-    FORMAT = pyaudio.paInt16
-    CHANNELS = 0
-    RATE = 0
+    def __init__(self):
+        self.CHUNK = 2048
+        self.FORMAT = pyaudio.paInt16
+        self.CHANNELS = None
+        self.RATE = None
